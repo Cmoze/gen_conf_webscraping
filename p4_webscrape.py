@@ -1,4 +1,4 @@
-"""
+f"""
 Carter Moser
 Cam Christopher
 Zackery Schaub
@@ -9,6 +9,7 @@ import requests
 import pandas as pd
 import sqlalchemy
 import matplotlib.pyplot as plot
+import copy
 
 standard_works_dict = {
             'Speaker_Name': '', 'Talk_Name': '', 'Kicker': '',
@@ -44,7 +45,7 @@ if user_input == '1':
     drop_table_query = sqlalchemy.text("drop table if exists general_conference;")
     conn = engine.connect()
     conn.execute(drop_table_query)
-    conn.commit
+    conn.commit()
     conn.close()
     #Scrape
     base_url = 'https://www.churchofjesuschrist.org'
@@ -61,7 +62,7 @@ if user_input == '1':
     for link in all_links :
         href = link['href']
     # Only keep links that are individual talks
-        if '/study/general-conference/2025/10/' in href:
+        if '/study/general-conference/2026/04/' in href:
             # Skip session and sustaining pages
             if 'session' in href.lower() or 'sustaining' in href.lower():
                 continue
@@ -70,10 +71,114 @@ if user_input == '1':
                 talk_urls.append(full_url)
     
     #Need to pull data from each individual talk.
+    all_talks = []
+
     for url in talk_urls :
+        current_talk = copy.deepcopy(standard_works_dict)
+
+        response = requests.get(url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Extract basic info
+        title_tag = soup.find('h1')
+        speaker_tag = soup.find('p', class_='author-name')
+        kicker_tag = soup.find('p', class_='kicker')
+
+        current_talk['Talk_Name'] = title_tag.get_text(strip=True) if title_tag else ''
+        current_talk['Speaker_Name'] = speaker_tag.get_text(strip=True).replace("By ", "") if speaker_tag else ''
+        current_talk['Kicker'] = kicker_tag.get_text(strip=True) if kicker_tag else ''
+
+        # Count scripture references
+        references = soup.find_all('a', class_='scripture-ref') or []
+
+        books = sorted(
+            [b for b in current_talk if b not in ['Speaker_Name', 'Talk_Name', 'Kicker']],
+            key=len,
+            reverse=True
+        )
+
+        for ref in references:
+            text = ref.get_text()
+
+            for book in books:
+                if book in text:
+                    current_talk[book] += 1
+                    break
+
+        all_talks.append(current_talk)
+
+    df = pd.DataFrame(all_talks)
+    df.to_sql('general_conference', engine, index=False, if_exists='replace')
+    print("You've saved the scraped data to your postgres database.")
      
+
+
+
 elif user_input == '2':
-    # Part 2 code
-     
-else:
-    print("Closing the program.")
+    print("You selected to see summaries. Enter 1 to see a summary of all talks. Enter 2 to select a specific talk. Enter anything else to exit: ")
+    choice = input()
+
+    # Load data from Postgres
+    df = pd.read_sql('general_conference', engine)
+
+    if choice == '1':
+        # Get all book columns
+        book_columns = [col for col in df.columns if col not in ['Speaker_Name', 'Talk_Name', 'Kicker']]
+
+        # Sum all references across talks
+        totals = df[book_columns].sum()
+
+        # Only keep books with more than 2 references
+        filtered = totals[totals > 2]
+
+        # Plot
+        plot.figure()
+        filtered.plot(kind='bar')
+
+        plot.title('Standard Works Referenced in General Conference')
+        plot.xlabel('Standard Works Books')
+        plot.ylabel('# Times Referenced')
+
+        plot.xticks(rotation=90)
+        plot.tight_layout()
+        plot.show()
+
+    elif choice == '2':
+        print("The following are the names of speakers and their talks:")
+
+        # Display numbered list
+        for i, row in df.iterrows():
+            print(f"{i+1}: {row['Speaker_Name']} – {row['Talk_Name']}")
+
+        # Get user selection
+        selection = int(input("Please enter the number of the talk you want to see summarized: "))
+
+        # Validate selection
+        if selection < 1 or selection > len(df):
+            print("Invalid selection.")
+        else:
+            selected_row = df.iloc[selection - 1]
+
+            # Get book columns
+            book_columns = [col for col in df.columns if col not in ['Speaker_Name', 'Talk_Name', 'Kicker']]
+
+            # Get data for that talk
+            talk_data = selected_row[book_columns]
+
+            # Only keep books with at least 1 reference
+            filtered = talk_data[talk_data > 0]
+
+            # Plot
+            plot.figure()
+            filtered.plot(kind='bar')
+
+            plot.title(f"Standard Works Referenced in: {selected_row['Talk_Name']}")
+            plot.xlabel('Standard Works Books')
+            plot.ylabel('# Times Referenced')
+
+            plot.xticks(rotation=90)
+            plot.tight_layout()
+            plot.show()
+
+    else:
+        print("Closing the program.")
